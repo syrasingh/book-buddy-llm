@@ -1,0 +1,12 @@
+# Secrets
+.env
+
+# Virtual environment
+venv/
+__pycache__/
+
+# Generated vectorstore (rebuildable)
+vectorstore/
+
+# OS junk
+.DS_Store
