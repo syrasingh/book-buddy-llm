@@ -8,12 +8,12 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_core.documents import Document  # ✅ add this
+from langchain_core.documents import Document
 
 load_dotenv()
 
 def scrape_goodreads_book(url):
-    """Scrape specific parts of a Goodreads book page"""
+    """Scrape title, description, AND page count from Goodreads"""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
@@ -21,24 +21,62 @@ def scrape_goodreads_book(url):
         response = requests.get(url, headers=headers, timeout=20)
         soup = BeautifulSoup(response.content, "html.parser")
 
+        # Extract title
         title_tag = soup.find("h1")
         title = title_tag.get_text(strip=True) if title_tag else "Unknown"
 
+        # Extract description
         desc_tag = soup.find("div", {"data-testid": "description"})
         if not desc_tag:
             desc_tag = soup.find("span", class_="Formatted")
-
         description = desc_tag.get_text(" ", strip=True) if desc_tag else ""
 
-        content = f"Title: {title}\n\nDescription: {description}"
-        print(f"✓ Scraped: {title[:50]}...")
-        return content
+        # Extract page count 
+        pages = None
+        
+        # Method 1: Look for "XXX pages" text
+        page_text = soup.find(string=lambda text: text and "pages" in text.lower())
+        if page_text:
+            import re
+            match = re.search(r'(\d+)\s*pages', page_text.lower())
+            if match:
+                pages = int(match.group(1))
+        
+        # Method 2: Look in book details section
+        if not pages:
+            details = soup.find_all("p", {"data-testid": "pagesFormat"})
+            for detail in details:
+                text = detail.get_text()
+                import re
+                match = re.search(r'(\d+)\s*pages', text.lower())
+                if match:
+                    pages = int(match.group(1))
+                    break
+        
+        # Method 3: Look for page info
+        if not pages:
+            all_text = soup.get_text()
+            import re
+            matches = re.findall(r'(\d{2,4})\s*pages', all_text.lower())
+            if matches:
+                # Take first reasonable page count 
+                for match in matches:
+                    num = int(match)
+                    if 50 <= num <= 2000:
+                        pages = num
+                        break
+
+        # Format content with page count included
+        page_info = f"\nPages: {pages}" if pages else "\nPages: Unknown"
+        content = f"Title: {title}{page_info}\n\nDescription: {description}"
+        
+        print(f"✓ Scraped: {title[:50]}... ({pages or '?'} pages)")
+        return content, {"source": url, "pages": pages}
 
     except Exception as e:
         print(f"✗ Failed to scrape {url}: {e}")
-        return None
+        return None, None
 
-# Your list of Goodreads book pages
 WEBSITE_URLS = [
     "https://www.goodreads.com/book/show/5907.The_Hobbit",
     "https://www.goodreads.com/book/show/3.Harry_Potter_and_the_Sorcerer_s_Stone",
@@ -78,28 +116,26 @@ WEBSITE_URLS = [
     "https://www.goodreads.com/book/show/40121378-atomic-habits",
 ]
 
-BOOK_URLS = WEBSITE_URLS  # ✅ add this
-
-print(f"Scraping {len(BOOK_URLS)} book pages...")
+print(f"Scraping {len(WEBSITE_URLS)} book pages...")
 print("This will take 1-2 minutes...\n")
 
 documents = []
-for i, url in enumerate(BOOK_URLS, 1):
-    print(f"[{i}/{len(BOOK_URLS)}] ", end="")
-    content = scrape_goodreads_book(url)
+for i, url in enumerate(WEBSITE_URLS, 1):
+    print(f"[{i}/{len(WEBSITE_URLS)}] ", end="")
+    content, metadata = scrape_goodreads_book(url)
     if content:
-        doc = Document(page_content=content, metadata={"source": url})
+        doc = Document(page_content=content, metadata=metadata)
         documents.append(doc)
     time.sleep(2)
 
-print(f"\n✓ Successfully scraped {len(documents)}/{len(BOOK_URLS)} books")
+print(f"\n✓ Successfully scraped {len(documents)}/{len(WEBSITE_URLS)} books")
 
 if len(documents) == 0:
     print("\n❌ ERROR: No books were scraped!")
     print("Goodreads is likely blocking requests.")
     exit(1)
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=250)
 chunks = text_splitter.split_documents(documents)
 
 print(f"✓ Split into {len(chunks)} chunks")
@@ -109,4 +145,5 @@ print("✓ Creating vectorstore...")
 vectorstore = FAISS.from_documents(chunks, embeddings)
 vectorstore.save_local("vectorstore")
 
-print("\n✅ SUCCESS! Vectorstore created!")
+print("\n✅ SUCCESS! Vectorstore created with page counts!")
+print("Run 'python test_vectorstore.py' to verify page counts were captured!")

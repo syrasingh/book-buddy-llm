@@ -19,24 +19,43 @@ def estimate_reading_time_hours(
     wpm: int = 250,
     words_per_page: int = 275
 ) -> Optional[float]:
-    if pages is None:
+    """Calculate reading time from page count"""
+    if pages is None or pages <= 0:
         return None
     minutes = (pages * words_per_page) / wpm
     return round(minutes / 60, 1)
 
+def _extract_pages_from_text(text: str) -> Optional[int]:
+    """Extract page count from text like 'Pages: 310' or '310 pages'"""
+    if not text:
+        return None
+    
+    # Look for "Pages: XXX" format (from our scraping)
+    match = re.search(r'Pages:\s*(\d{2,4})', text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    
+    # Look for "XXX pages" format
+    match = re.search(r'(\d{2,4})\s*pages', text, re.IGNORECASE)
+    if match:
+        num = int(match.group(1))
+        if 50 <= num <= 2000:  # Sanity check
+            return num
+    
+    return None
+
 def _normalize_pages(value) -> Optional[int]:
+    """Normalize page count from various formats"""
     if value is None:
         return None
     if isinstance(value, int):
-        return value
+        return value if 50 <= value <= 2000 else None
     if isinstance(value, str):
-        m = re.search(r"\d{2,4}", value)
-        return int(m.group()) if m else None
+        return _extract_pages_from_text(value)
     return None
 
 # ----------------------------
 # LLM: FORCE JSON OUTPUT
-# NOTE: messages MUST contain the word "json" for response_format=json_object
 # ----------------------------
 llm = ChatOpenAI(
     model="gpt-4o-mini",
@@ -57,14 +76,19 @@ vectorstore = FAISS.load_local(
 retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
 def _format_context(docs) -> str:
+    """Format retrieved documents with page counts highlighted"""
     parts = []
     for d in docs:
-        src = d.metadata.get("source", d.metadata.get("source_url", "unknown"))
+        src = d.metadata.get("source", "unknown")
+        pages_meta = d.metadata.get("pages")
         text = (d.page_content or "").strip()
         if not text:
             continue
+        
+        # Include page count in context if available
+        page_note = f" [Pages: {pages_meta}]" if pages_meta else ""
         text = text[:1200]
-        parts.append(f"Source: {src}\n{text}")
+        parts.append(f"Source: {src}{page_note}\n{text}")
     return "\n\n---\n\n".join(parts)
 
 # ----------------------------
@@ -83,19 +107,27 @@ def get_chatbot_response(user_question: str, prefs: Dict[str, Any]) -> Dict[str,
 
     if not context.strip():
         return {
-            "error": "No context was retrieved from your vectorstore. Try rebuilding it (prep_vectorstore.py).",
+            "error": "No context was retrieved from your vectorstore.",
             "raw": "",
         }
 
-    # ---- Fix #2: Closest-match rules are explicitly in the instructions ----
     system = SystemMessage(content=f"""
 You are a book recommendation assistant.
 
 You must respond with valid json only. No extra text.
 
 You must base recommendations on the retrieved context.
-If the user's exact request (e.g., "funny romance") is not available, choose the closest matches from the retrieved books and explain why they’re the closest fit.
+If the user's exact request is not available, choose the closest matches and explain why.
 
+IMPORTANT: When you see "Pages: XXX" in the context, include that exact number in your response.
+                           
+For each recommendation, explain:
+1. HOW it matches their specific mood/genre/pace request
+2. WHAT makes it unique or compelling
+3. WHO might especially love it (e.g., "fans of X will appreciate Y")
+
+Be specific and enthusiastic, not generic.
+                           
 Return json exactly in this schema:
 {{
   "reading_list": [
@@ -103,9 +135,9 @@ Return json exactly in this schema:
       "title": "string",
       "author": "string or null",
       "genre": "string or null",
-      "why_it_matches": "1-2 sentences",
-      "evidence_from_sources": "short signal from context",
-      "estimated_pages": integer or null
+      "why_it_matches": "3-4 sentences that specifically address their request (mood, pace, genre) with concrete details from the book",
+      "vibe_comparison": "Optional: 'If you loved [popular book], you'll enjoy [specific aspect]' or null",
+      "estimated_pages": integer (extract from "Pages: XXX" in context) or null
     }}
   ],
   "follow_up_question": "string"
@@ -113,9 +145,11 @@ Return json exactly in this schema:
 
 Rules:
 - Recommend exactly 5 books.
-- If you can't find 5 perfect matches, still return 5 books that are the closest matches available in the retrieved context.
-- Never say "I don't know."
-- If author/genre/pages are unknown, use null.
+- Extract page counts from context when available (look for "Pages: XXX")
+- If you can't find 5 perfect matches, return 5 closest matches.
+- Make explanations SPECIFIC to the user's request
+- Use enthusiastic but honest language
+- If author/genre/pages unknown, use null.
 """.strip())
 
     mood_guide = """
@@ -142,7 +176,7 @@ User preferences:
 
 {mood_guide}
 
-Context (use this as your source):
+Context (use this as your source - pay attention to "Pages: XXX"):
 {context}
 
 Reminder: output json only.
@@ -157,32 +191,39 @@ Reminder: output json only.
         data = json.loads(raw)
     except Exception:
         return {
-            "error": "Model did not return valid JSON. Here is the raw output:",
+            "error": "Model did not return valid JSON.",
             "raw": raw,
         }
 
-    # 4) Validate/normalize
+    # 4) Validate and calculate reading times
     reading_list = data.get("reading_list", [])
     if not isinstance(reading_list, list) or len(reading_list) == 0:
         return {
-            "error": "JSON returned but reading_list is missing/empty. Raw output:",
+            "error": "JSON returned but reading_list is missing/empty.",
             "raw": raw,
         }
 
-    # Force exactly 5 (frontend expects 5)
+    # Force exactly 5
     reading_list = reading_list[:5]
     while len(reading_list) < 5:
         reading_list.append({
             "title": None,
             "author": None,
             "genre": None,
-            "why_it_matches": "Closest available match from the retrieved context.",
+            "why_it_matches": "Closest available match.",
             "evidence_from_sources": None,
             "estimated_pages": None,
         })
 
     for item in reading_list:
+        # Try to get pages from the model's response or extract from context
         pages = _normalize_pages(item.get("estimated_pages"))
+        
+        # If model didn't provide pages, try to extract from evidence
+        if not pages and item.get("evidence_from_sources"):
+            pages = _extract_pages_from_text(item["evidence_from_sources"])
+        
+        # Calculate reading time using the scraped page count
         item["estimated_pages"] = pages
         item["estimated_reading_time_hours"] = estimate_reading_time_hours(pages)
 
