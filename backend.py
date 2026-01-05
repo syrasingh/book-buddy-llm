@@ -11,9 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 load_dotenv()
 
-# ----------------------------
 # Tool: reading time estimate
-# ----------------------------
 def estimate_reading_time_hours(
     pages: Optional[int],
     wpm: int = 250,
@@ -54,9 +52,7 @@ def _normalize_pages(value) -> Optional[int]:
         return _extract_pages_from_text(value)
     return None
 
-# ----------------------------
 # LLM: FORCE JSON OUTPUT
-# ----------------------------
 llm = ChatOpenAI(
     model="gpt-4o-mini",
     temperature=0.4,
@@ -64,9 +60,7 @@ llm = ChatOpenAI(
     model_kwargs={"response_format": {"type": "json_object"}},
 )
 
-# ----------------------------
 # Vectorstore + retriever
-# ----------------------------
 embeddings = OpenAIEmbeddings(api_key=os.getenv("OPENAI_API_KEY"))
 vectorstore = FAISS.load_local(
     "vectorstore",
@@ -91,9 +85,7 @@ def _format_context(docs) -> str:
         parts.append(f"Source: {src}{page_note}\n{text}")
     return "\n\n---\n\n".join(parts)
 
-# ----------------------------
 # Main function used by Streamlit
-# ----------------------------
 def get_chatbot_response(user_question: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
     genre = prefs.get("genre", "Any")
     mood = prefs.get("mood", "Any")
