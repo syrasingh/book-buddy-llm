@@ -95,9 +95,9 @@ streamlit run frontend.py
 ## Future Improvements
 
 - Add author metadata and genres to the vectorstore
+- Add additional book options to the dataset
 - Improve Goodreads scraping robustness
 - Add reranking or diversity constraints
-- Deploy publicly (Streamlit Cloud or similar)
 
 ## Demo
 
