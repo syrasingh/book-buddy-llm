@@ -5,7 +5,7 @@ from backend import get_chatbot_response
 st.title("Your Fav Book Buddy 📚")
 st.markdown("Tell me what kind of books you are interested in and I'll generate 5 recommendations.")
 
-# --- Preferences form ---
+# Preferences form 
 with st.sidebar:
     st.header("Your Preferences")
 
@@ -54,7 +54,7 @@ st.session_state.current_prefs = {
     "length_pref": length_pref,
 }
 
-# --- Chat history ---
+# Chat history 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -67,7 +67,7 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- Handle Get Recommendations button ---
+# Handle Get Recommendations button 
 if get_recs_button:
     # Create a generic prompt based on preferences
     pref_parts = []
@@ -89,7 +89,7 @@ if get_recs_button:
     st.session_state.pending_button_prompt = auto_prompt
     st.rerun()
 
-# --- Handle chat input ---
+# Handle chat input
 prompt = st.chat_input("What are you in the mood to read? (e.g., 'cozy fantasy like The Hobbit')")
 
 # Determine which prompt to process
